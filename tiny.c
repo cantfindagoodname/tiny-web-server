@@ -24,7 +24,7 @@
 #endif
 
 #ifndef FORK_COUNT
-#define FORK_COUNT 4
+#define FORK_COUNT 0
 #endif
 
 #ifndef NO_LOG_ACCESS
@@ -246,41 +246,8 @@ void format_size(char* buf, struct stat *stat) {
 }
 
 void handle_directory_request(int out_fd, int dir_fd, char *filename) {
-	char buf[MAXLINE], m_time[32], size[16];
-	struct stat statbuf;
-	sprintf(buf, "HTTP/1.1 200 OK\r\n%s%s%s%s%s",
-			"Content-Type: text/html\r\n\r\n",
-			"<html><head><style>",
-			"body{font-family: monospace; font-size: 13px;}",
-			"td {padding: 1.5px 6px;}",
-			"</style></head><body><table>\n");
-	writen(out_fd, buf, strlen(buf));
-	DIR *d = fdopendir(dir_fd);
-	struct dirent *dp;
-	int ffd;
-	while ((dp = readdir(d)) != NULL) {
-		if(!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
-			continue;
-		}
-		if ((ffd = openat(dir_fd, dp->d_name, O_RDONLY)) == -1) {
-			perror(dp->d_name);
-			continue;
-		}
-		fstat(ffd, &statbuf);
-		strftime(m_time, sizeof(m_time),
-				 "%Y-%m-%d %H:%M", localtime(&statbuf.st_mtime));
-		format_size(size, &statbuf);
-		if(S_ISREG(statbuf.st_mode) || S_ISDIR(statbuf.st_mode)) {
-			char *d = S_ISDIR(statbuf.st_mode) ? "/" : "";
-			sprintf(buf, "<tr><td><a href=\"%s%s\">%s%s</a></td><td>%s</td><td>%s</td></tr>\n",
-					dp->d_name, d, dp->d_name, d, m_time, size);
-			writen(out_fd, buf, strlen(buf));
-		}
-		close(ffd);
-	}
-	sprintf(buf, "</table></body></html>");
-	writen(out_fd, buf, strlen(buf));
-	closedir(d);
+    writen(out_fd, "Hello World!", strlen("Hello World!"));
+    close(out_fd);
 }
 
 static const char* get_mime_type(char *filename) {
@@ -396,45 +363,12 @@ void log_access(int status, struct sockaddr_in *c_addr, http_request *req) {
 }
 #endif
 
-void client_error(int fd, int status, char *msg, char *longmsg) {
-	char buf[MAXLINE];
-	sprintf(buf, "HTTP/1.1 %d %s\r\n", status, msg);
-	sprintf(buf + strlen(buf),
-			"Content-length: %lu\r\n\r\n", strlen(longmsg));
-	sprintf(buf + strlen(buf), "%s", longmsg);
-	writen(fd, buf, strlen(buf));
-}
-
-void serve_static(int out_fd, int in_fd, http_request *req,
-				  size_t total_size) {
-	char buf[256];
-	if (req->offset > 0) {
-		sprintf(buf, "HTTP/1.1 206 Partial\r\n");
-		sprintf(buf + strlen(buf), "Content-Range: bytes %lu-%lu/%lu\r\n",
-				req->offset, req->end, total_size);
-	} else {
-		sprintf(buf, "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\n");
-	}
-	sprintf(buf + strlen(buf), "Cache-Control: no-cache\r\n");
-	// sprintf(buf + strlen(buf), "Cache-Control: public, max-age=315360000\r\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\r\n");
-
-	sprintf(buf + strlen(buf), "Content-length: %lu\r\n",
-			req->end - req->offset);
-	sprintf(buf + strlen(buf), "Content-type: %s\r\n\r\n",
-			get_mime_type(req->filename));
-
-	writen(out_fd, buf, strlen(buf));
-	off_t offset = req->offset; /* copy */
-	while(offset < req->end) {
-		if(sendfile(out_fd, in_fd, &offset, req->end - req->offset) <= 0) {
-			break;
-		}
-#ifdef LOG_ACCESS
-		printf("offset: %d \n\n", (unsigned int)offset);
-#endif
-		close(out_fd);
-		break;
-	}
+void handle_request(int out_fd, char *file_name)
+{
+    writen(out_fd, "I received ", strlen("I received "));
+    writen(out_fd, file_name, strlen(file_name));
+    writen(out_fd, "\n", strlen("\n"));
+    close(out_fd);
 }
 
 void process(int fd, struct sockaddr_in *clientaddr) {
@@ -444,81 +378,28 @@ void process(int fd, struct sockaddr_in *clientaddr) {
 	http_request req;
 	parse_request(fd, &req);
 
-	struct stat sbuf;
-	int status = 200, ffd = open(req.filename, O_RDONLY, 0);
-	if(ffd <= 0) {
-		status = 404;
-		char *msg = "File not found";
-		client_error(fd, status, "Not found", msg);
-	} else {
-		fstat(ffd, &sbuf);
-		if(S_ISREG(sbuf.st_mode)) {
-			if (req.end == 0) {
-				req.end = sbuf.st_size;
-			}
-			if (req.offset > 0) {
-				status = 206;
-			}
-			serve_static(fd, ffd, &req, sbuf.st_size);
-		} else if(S_ISDIR(sbuf.st_mode)) {
-			status = 200;
-			handle_directory_request(fd, ffd, req.filename);
-		} else {
-			status = 400;
-			char *msg = "Unknow Error";
-			client_error(fd, status, "Error", msg);
-		}
-		close(ffd);
-	}
+    int status = 200;
+    handle_request(fd, req.filename);
+
+    char *p = req.filename;
+    while(*p && (*p) != '\0'){
+        ++p;
+        if(*p == '/'){
+            *p = ' ';
+        }
+    }
 #ifdef LOG_ACCESS
-	log_access(status, clientaddr, &req);
+    log_access(status, clientaddr, &req);
 #endif
 }
 
-void print_help()
-{
-	printf("TINY WEBSERVER HELP\n");
-	printf("tiny            #use default port, serve current dir\n");
-	printf("tiny /tmp       #use default port, serve given dir\n");
-	printf("tiny 1234       #use given port, serve current dir\n");
-	printf("tiny /tmp 1234  #use given port, serve given dir\n");
-	printf("default port is %d.\n", DEFAULT_PORT);
-}
-
 int main(int argc, char** argv) {
-
-	if(argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")))
-	{
-		print_help();
-		return 0;
-	}
-
 	struct sockaddr_in clientaddr;
 	int default_port = DEFAULT_PORT,
 		listenfd,
 		connfd;
-	char buf[256];
-	char *path = getcwd(buf, 256);
+
 	socklen_t clientlen = sizeof clientaddr;
-	if(argc == 2) {
-		if(argv[1][0] >= '0' && argv[1][0] <= '9') {
-			default_port = atoi(argv[1]);
-		} else {
-			path = argv[1];
-			if(chdir(path) != 0) {
-				perror(path);
-				exit(1);
-			}
-		}
-	} else if (argc == 3) {
-		default_port = atoi(argv[2]);
-		path = argv[1];
-		if(chdir(path) != 0) {
-			perror(path);
-			exit(1);
-		}
-	}
-	printf("serve directory '%s'\n", path);
 
 	listenfd = open_listenfd(default_port);
 	if (listenfd > 0) {
@@ -527,25 +408,13 @@ int main(int argc, char** argv) {
 		perror("ERROR");
 		exit(listenfd);
 	}
+
+    //int flags = fcntl(listenfd, F_GETFL);
+    //fcntl(listenfd, F_SETFL, flags | O_NONBLOCK);
+
 	// Ignore SIGPIPE signal, so if browser cancels the request, it
 	// won't kill the whole process.
 	signal(SIGPIPE, SIG_IGN);
-
-	int i=0;
-	for(; i < FORK_COUNT; i++) {
-		int pid = fork();
-		if (pid == 0) {		 //  child
-			while(1) {
-				connfd = accept(listenfd, (SA *)&clientaddr, &clientlen);
-				process(connfd, &clientaddr);
-				close(connfd);
-			}
-		} else if (pid > 0) {   //  parent
-			printf("child pid is %d\n", pid);
-		} else {
-			perror("fork");
-		}
-	}
 
 	while(1) {
 		connfd = accept(listenfd, (SA *)&clientaddr, &clientlen);
